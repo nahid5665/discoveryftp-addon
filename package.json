@@ -1,0 +1,12 @@
+{
+  "name": "discoveryftp-stremio-addon",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "crawl-listing": "node scrape-listing.mjs",
+    "crawl-details": "node scrape-details.mjs",
+    "start": "node api/index.mjs"
+  },
+  "engines": { "node": ">=18" }
+}
