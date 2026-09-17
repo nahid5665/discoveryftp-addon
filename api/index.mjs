@@ -14,17 +14,24 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'index.json'), 'utf8'));
 
+// Series index is optional — addon still works movie-only if it's missing.
+let rawSeries = { generated: null, count: 0, items: [] };
+try {
+  rawSeries = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'index-series.json'), 'utf8'));
+} catch { /* not built yet */ }
+
 const norm = s => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 const ITEMS = raw.items.map(it => ({ ...it, tn: norm(it.t) }));
+const EPISODES = rawSeries.items.map(it => ({ ...it, tn: norm(it.show) }));
 
 const MANIFEST = {
   id: 'com.you.discoveryftp.streams',
-  version: '1.0.0',
+  version: '1.1.0',
   name: 'DiscoveryFTP (Local)',
-  description: `Direct BDIX streams from DiscoveryFTP/DFLIX. Index built ${raw.generated} — ${raw.count} files.`,
+  description: `Direct BDIX streams from DiscoveryFTP/DFLIX. Movies: ${raw.count}. Series episodes: ${rawSeries.count}.`,
   resources: ['stream'],
-  types: ['movie'], // series support: TODO once /s/ listing structure is confirmed
+  types: ['movie', 'series'],
   idPrefixes: ['tt'],
   catalogs: [],
 };
@@ -61,6 +68,11 @@ function findMovie(title, year) {
   });
 }
 
+function findEpisode(showTitle, season, episode) {
+  const t = norm(showTitle);
+  return EPISODES.filter(e => e.tn === t && e.season === season && e.episode === episode);
+}
+
 function toStreams(matches) {
   return matches
     .slice()
@@ -74,17 +86,41 @@ function toStreams(matches) {
     }));
 }
 
+function toEpisodeStreams(matches) {
+  return matches
+    .slice()
+    .sort((a, b) => qrank(a.q) - qrank(b.q))
+    .slice(0, 20)
+    .map(e => ({
+      name: `DFLIX\n${e.q.trim() || 'SD'}`,
+      title: [e.epTitle, e.g?.length ? e.g.join(', ') : null].filter(Boolean).join('\n'),
+      url: e.u,
+      behaviorHints: { notWebReady: true, bingeGroup: `discoveryftp-s-${qrank(e.q)}` },
+    }));
+}
+
 async function route(pathname) {
   if (pathname === '/' || pathname === '/manifest.json') return MANIFEST;
 
-  const m = pathname.match(/^\/stream\/movie\/(.+)\.json$/);
-  if (!m) return null;
+  const movieMatch = pathname.match(/^\/stream\/movie\/(.+)\.json$/);
+  if (movieMatch) {
+    const imdbId = decodeURIComponent(movieMatch[1]);
+    const meta = await cinemeta('movie', imdbId);
+    if (!meta?.name) return { streams: [] };
+    return { streams: toStreams(findMovie(meta.name, meta.year)) };
+  }
 
-  const imdbId = decodeURIComponent(m[1]);
-  const meta = await cinemeta('movie', imdbId);
-  if (!meta?.name) return { streams: [] };
+  // Stremio series stream ids look like "tt1234567:1:3" (imdbId:season:episode).
+  const seriesMatch = pathname.match(/^\/stream\/series\/(.+)\.json$/);
+  if (seriesMatch) {
+    const [imdbId, seasonStr, episodeStr] = decodeURIComponent(seriesMatch[1]).split(':');
+    const season = Number(seasonStr), episode = Number(episodeStr);
+    const meta = await cinemeta('series', imdbId);
+    if (!meta?.name || !season || !episode) return { streams: [] };
+    return { streams: toEpisodeStreams(findEpisode(meta.name, season, episode)) };
+  }
 
-  return { streams: toStreams(findMovie(meta.name, meta.year)) };
+  return null;
 }
 
 export default async function handler(req, res) {
